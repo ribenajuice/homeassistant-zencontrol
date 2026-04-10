@@ -1,0 +1,66 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "zencontrol — Lumen Resources",
+        "description": "Connect a zencontrol Application Controller to Home Assistant.\n\nThis integration is provided by **Lumen Resources** (lumenresources.com.au).\n\nEnter the IP address of the zencontrol controller. The TPI Advanced licence must be enabled on the controller.",
+        "data": {
+          "host": "IP Address",
+          "port": "Port (default 5108)"
+        }
+      },
+      "confirm": {
+        "title": "Confirm Controller",
+        "description": "Found controller: **{label}** at {host}.\n\nChoose how Home Assistant receives live state events from the controller.",
+        "data": {
+          "use_multicast": "Use UDP Multicast (instead of Unicast)",
+          "event_port": "Unicast event receive port (default 6970)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the controller. Check the IP address and ensure the controller has the TPI Advanced licence enabled.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This controller is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure zencontrol",
+        "menu_options": {
+          "add_scene": "Add a scene",
+          "remove_scene": "Remove a scene",
+          "done": "Save and finish"
+        }
+      },
+      "add_scene": {
+        "title": "Add Scene",
+        "description": "Configure a scene to recall on a DALI group or short address.\n\nLeave the name blank to auto-fetch it from the controller.",
+        "data": {
+          "target_type": "Target type",
+          "target_number": "Target number",
+          "scene_number": "Scene number (0–12)",
+          "scene_name": "Display name (optional)"
+        }
+      },
+      "remove_scene": {
+        "title": "Remove Scene",
+        "description": "Select the scene to remove.",
+        "data": {
+          "scene_index": "Scene"
+        }
+      }
+    },
+    "error": {
+      "invalid_group": "Group number must be between 0 and 15.",
+      "invalid_address": "Address must be between 0 and 63.",
+      "scene_exists": "A scene with this target and scene number is already configured."
+    },
+    "abort": {
+      "no_scenes": "No scenes are currently configured."
+    }
+  }
+}
