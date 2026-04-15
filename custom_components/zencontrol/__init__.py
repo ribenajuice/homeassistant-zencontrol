@@ -24,6 +24,7 @@ from .tpi import EventListener
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
     Platform.LIGHT,
     Platform.SCENE,
     Platform.SELECT,

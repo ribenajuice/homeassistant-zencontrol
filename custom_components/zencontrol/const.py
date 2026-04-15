@@ -29,6 +29,7 @@ UID_GROUP = "group"
 UID_SHORT = "short"
 UID_SCENE = "scene"
 UID_PROFILE = "profile"
+UID_OCCUPANCY = "occupancy"
 
 # HA data keys (stored in hass.data[DOMAIN])
 DATA_COORDINATOR = "coordinator"

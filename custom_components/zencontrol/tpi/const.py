@@ -249,6 +249,18 @@ class DaliCgTypeMask(IntFlag):
 # Bits 5-7: number of RGBWAF channels
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# DALI control device instance types
+# ---------------------------------------------------------------------------
+
+class InstanceType(IntEnum):
+    PUSH_BUTTON = 0x01
+    ABSOLUTE_INPUT = 0x02
+    OCCUPANCY_SENSOR = 0x03
+    LIGHT_SENSOR = 0x04
+    GENERAL_PURPOSE = 0x06
+
+
 def parse_colour_features(byte: int) -> dict:
     """Parse the colour features byte into a dict of capabilities."""
     return {

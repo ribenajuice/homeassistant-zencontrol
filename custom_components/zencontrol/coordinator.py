@@ -9,6 +9,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -36,6 +37,9 @@ from .tpi import (
     EventListener,
     EventType,
     GroupInfo,
+    InstanceInfo,
+    InstanceType,
+    OccupancyTimerInfo,
     ProfileInfo,
     ProfileInformation,
     TpiClient,
@@ -58,6 +62,15 @@ SCAN_INTERVAL = timedelta(seconds=PING_INTERVAL)
 # ---------------------------------------------------------------------------
 # State containers
 # ---------------------------------------------------------------------------
+
+@dataclass
+class OccupancySensorInfo:
+    """Metadata for one occupancy sensor instance on a DALI control device."""
+    cd_address: int          # Control device short address (0-63)
+    instance_number: int     # Instance number on that device
+    label: str = ""
+    hold_time_s: int = 60    # How long to stay "occupied" after last detection
+
 
 @dataclass
 class DeviceState:
@@ -95,6 +108,12 @@ class ControllerState:
     # {address: ColourTempLimits}
     short_address_ct_limits: dict[int, ColourTempLimits] = field(default_factory=dict)
 
+    # Occupancy sensors (auto-discovered)
+    # List of all discovered occupancy sensor instances
+    occupancy_sensors: list[OccupancySensorInfo] = field(default_factory=list)
+    # Live occupancy state keyed by (cd_address, instance_number)
+    sensor_occupancy: dict[tuple[int, int], bool] = field(default_factory=dict)
+
 
 # ---------------------------------------------------------------------------
 # Coordinator
@@ -121,6 +140,8 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
 
         self._client = TpiClient(host=self._host, port=self._port)
         self.commands = ZenCommands(self._client)
+        # Occupancy hold timers: (cd_address, instance_number) → cancel_callback
+        self._occupancy_timers: dict[tuple[int, int], Any] = {}
 
         super().__init__(
             hass,
@@ -207,18 +228,22 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         if current is not None:
             self.data.current_profile = current
 
-        # Short addresses (metadata only — entities are created by the user)
+        # Short addresses (auto-discovered)
         await self._discover_short_addresses()
+
+        # Occupancy sensors (auto-discovered)
+        await self._discover_occupancy_sensors()
 
         # Initial state poll for all known addresses
         await self._poll_all_states()
 
         _LOGGER.debug(
-            "Discovery complete for %s: %d groups, %d short addresses, %d profiles",
+            "Discovery complete for %s: %d groups, %d short addresses, %d profiles, %d occupancy sensors",
             self._host,
             len(self.data.groups),
             len(self.data.short_addresses),
             len(self.data.profile_info.profiles),
+            len(self.data.occupancy_sensors),
         )
 
     async def _discover_short_addresses(self) -> None:
@@ -244,6 +269,55 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
 
             if addr not in self.data.device_states:
                 self.data.device_states[addr] = DeviceState()
+
+    async def _discover_occupancy_sensors(self) -> None:
+        """Auto-discover all DALI occupancy sensor instances on the controller."""
+        cd_addresses = await self.commands.query_addresses_with_instances()
+        _LOGGER.debug(
+            "Found %d control devices with instances on %s: %s",
+            len(cd_addresses), self._host, cd_addresses,
+        )
+
+        for cd_addr in cd_addresses:
+            instances = await self.commands.query_instances_by_address(cd_addr)
+            for inst in instances:
+                if inst.instance_type != InstanceType.OCCUPANCY_SENSOR:
+                    continue
+
+                # Fetch label and timer info
+                label = await self.commands.query_instance_label(cd_addr, inst.instance_number)
+                timer = await self.commands.query_occupancy_timer(cd_addr, inst.instance_number)
+
+                # Derive a label: use instance label, or fall back to device label + instance
+                if not label:
+                    device_label = self.data.short_address_labels.get(cd_addr, f"Device {cd_addr}")
+                    label = f"{device_label} Occupancy"
+                    if len(instances) > 1:
+                        label = f"{label} {inst.instance_number}"
+
+                sensor = OccupancySensorInfo(
+                    cd_address=cd_addr,
+                    instance_number=inst.instance_number,
+                    label=label,
+                    hold_time_s=timer.hold_time_s,
+                )
+                self.data.occupancy_sensors.append(sensor)
+
+                # Set initial state: occupied if the hold timer hasn't expired yet
+                key = (cd_addr, inst.instance_number)
+                occupied = timer.last_detect_s < timer.hold_time_s
+                self.data.sensor_occupancy[key] = occupied
+                _LOGGER.debug(
+                    "Occupancy sensor: addr=%d inst=%d label='%s' hold=%ds last_detect=%ds → %s",
+                    cd_addr, inst.instance_number, label,
+                    timer.hold_time_s, timer.last_detect_s,
+                    "occupied" if occupied else "clear",
+                )
+
+                # If currently occupied, start the hold timer for the remaining time
+                if occupied:
+                    remaining = max(1, timer.hold_time_s - timer.last_detect_s)
+                    self._start_occupancy_timer(key, remaining)
 
     async def _poll_all_states(self) -> None:
         """Poll the current arc level (and colour) for all known addresses."""
@@ -374,6 +448,8 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
                 self._handle_scene_change(event)
             elif event.event_type == EventType.PROFILE_CHANGED:
                 self._handle_profile_changed(event)
+            elif event.event_type == EventType.OCCUPANCY:
+                self._handle_occupancy(event)
         except Exception:
             _LOGGER.exception("Error handling TPI event type 0x%02X", event.event_type)
 
@@ -439,6 +515,44 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         self.data.current_profile = profile_id
         self.async_set_updated_data(self.data)
 
+    def _handle_occupancy(self, event: TpiEvent) -> None:
+        """OCCUPANCY_EVENT: target = cd_address, data = [instance_number, ...]."""
+        if not event.data:
+            return
+        cd_address = event.target
+        instance_number = event.data[0]
+        key = (cd_address, instance_number)
+
+        # Look up hold time for this sensor (fall back to 60 s)
+        hold_time_s = 60
+        for sensor in self.data.occupancy_sensors:
+            if sensor.cd_address == cd_address and sensor.instance_number == instance_number:
+                hold_time_s = sensor.hold_time_s
+                break
+
+        # Mark occupied and restart the hold timer
+        self.data.sensor_occupancy[key] = True
+        self._start_occupancy_timer(key, hold_time_s)
+        self.async_set_updated_data(self.data)
+
+    def _start_occupancy_timer(self, key: tuple[int, int], delay_s: int) -> None:
+        """Cancel any existing hold timer for *key* and start a new one."""
+        cancel = self._occupancy_timers.pop(key, None)
+        if cancel is not None:
+            cancel()
+        self._occupancy_timers[key] = async_call_later(
+            self.hass, delay_s, self._make_occupancy_timeout(key)
+        )
+
+    def _make_occupancy_timeout(self, key: tuple[int, int]):
+        """Return a callback that clears occupancy for *key* when the hold timer fires."""
+        @callback
+        def _on_timeout(_now: Any) -> None:
+            self._occupancy_timers.pop(key, None)
+            self.data.sensor_occupancy[key] = False
+            self.async_set_updated_data(self.data)
+        return _on_timeout
+
     # ------------------------------------------------------------------
     # Helpers for entities
     # ------------------------------------------------------------------
@@ -459,6 +573,9 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         )
 
     async def async_disconnect(self) -> None:
-        """Disconnect from the controller."""
+        """Disconnect from the controller and cancel any pending hold timers."""
+        for cancel in self._occupancy_timers.values():
+            cancel()
+        self._occupancy_timers.clear()
         await self._client.disconnect()
 

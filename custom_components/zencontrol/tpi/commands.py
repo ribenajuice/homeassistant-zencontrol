@@ -17,6 +17,7 @@ from .const import (
     ColourType,
     DaliCgTypeMask,
     DaliStatusMask,
+    InstanceType,
     ResponseType,
     TpiEventMode,
     parse_colour_features,
@@ -128,6 +129,21 @@ class ProfileInformation:
     current_profile: int = 0
     last_scheduled_profile: int = 0
     profiles: list[ProfileInfo] = field(default_factory=list)
+
+
+@dataclass
+class InstanceInfo:
+    """Describes one instance on a DALI control device."""
+    instance_number: int
+    instance_type: InstanceType | int
+    label: str = ""
+
+
+@dataclass
+class OccupancyTimerInfo:
+    """Hold time and last-detection data for an occupancy sensor instance."""
+    hold_time_s: int = 60
+    last_detect_s: int = 65535  # large value → sensor was not recently triggered
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +528,76 @@ class ZenCommands:
         lo = profile_id & 0xFF
         resp = await self._send(Command.CHANGE_PROFILE_NUMBER, data_mid=hi, data_lo=lo)
         return resp is not None and resp.ok
+
+    # ------------------------------------------------------------------
+    # DALI control device instance queries
+    # ------------------------------------------------------------------
+
+    async def query_addresses_with_instances(self) -> list[int]:
+        """Return list of CD short addresses (0-63) that have instances.
+
+        The command is paged — we query twice (start=0, start=60) and combine,
+        so that all 64 possible DALI addresses are covered.
+        """
+        addresses: set[int] = set()
+        for start in (0, 60):
+            resp = await self._send(Command.QUERY_DALI_ADDRESSES_WITH_INSTANCES, address=start)
+            if resp and resp.has_data:
+                for byte_idx, byte_val in enumerate(resp.data):
+                    for bit in range(8):
+                        if byte_val & (1 << bit):
+                            addr = start + byte_idx * 8 + bit
+                            if 0 <= addr <= 63:
+                                addresses.add(addr)
+        return sorted(addresses)
+
+    async def query_instances_by_address(self, cd_address: int) -> list[InstanceInfo]:
+        """Return all instances on the given control device address (0-63).
+
+        Response contains 4-byte records: [instance_num, instance_type, flags_hi, flags_lo].
+        """
+        resp = await self._send(Command.QUERY_INSTANCES_BY_ADDRESS, address=cd_address)
+        if not (resp and resp.has_data and len(resp.data) >= 4):
+            return []
+        instances = []
+        for offset in range(0, len(resp.data) - 3, 4):
+            instance_num = resp.data[offset]
+            type_byte = resp.data[offset + 1]
+            try:
+                itype: InstanceType | int = InstanceType(type_byte)
+            except ValueError:
+                itype = type_byte
+            instances.append(InstanceInfo(instance_number=instance_num, instance_type=itype))
+        return instances
+
+    async def query_occupancy_timer(
+        self, cd_address: int, instance_number: int
+    ) -> OccupancyTimerInfo:
+        """Return hold time and seconds-since-last-detection for an occupancy instance."""
+        resp = await self._send(
+            Command.QUERY_OCCUPANCY_INSTANCE_TIMERS,
+            address=cd_address,
+            data_lo=instance_number,
+        )
+        if resp and resp.has_data and len(resp.data) >= 4:
+            hold_time_s = (resp.data[0] << 8) | resp.data[1]
+            last_detect_s = (resp.data[2] << 8) | resp.data[3]
+            return OccupancyTimerInfo(
+                hold_time_s=hold_time_s if hold_time_s > 0 else 60,
+                last_detect_s=last_detect_s,
+            )
+        return OccupancyTimerInfo()
+
+    async def query_instance_label(self, cd_address: int, instance_number: int) -> str | None:
+        """Return the display label for a control device instance."""
+        resp = await self._send(
+            Command.QUERY_DALI_INSTANCE_LABEL,
+            address=cd_address,
+            data_lo=instance_number,
+        )
+        if resp and resp.has_data:
+            return resp.data.decode("utf-8", errors="replace")
+        return None
 
     # ------------------------------------------------------------------
     # TPI event configuration
