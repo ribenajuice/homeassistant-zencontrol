@@ -64,6 +64,14 @@ def _brightness_to_arc(brightness: int) -> int:
     return max(1, min(_DALI_MAX, arc))
 
 
+def _channel_to_dali(value: int) -> int:
+    """Scale a HA colour channel (0-255) to DALI range (0-254).
+
+    DALI reserves 0xFF (255) as 'no change' — valid channel values are 0-254.
+    """
+    return min(_DALI_MAX, round(value * _DALI_MAX / _HA_MAX))
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -152,7 +160,11 @@ class _ZenLightBase(CoordinatorEntity[ZenControlCoordinator], LightEntity):
         cs = self._get_colour_state()
         if cs and cs.colour_type == ColourType.RGBWAF:
             if cs.r is not None and cs.g is not None and cs.b is not None:
-                return (cs.r, cs.g, cs.b)
+                return (
+                    round(cs.r * _HA_MAX / _DALI_MAX),
+                    round(cs.g * _HA_MAX / _DALI_MAX),
+                    round(cs.b * _HA_MAX / _DALI_MAX),
+                )
         return None
 
     @property
@@ -160,7 +172,12 @@ class _ZenLightBase(CoordinatorEntity[ZenControlCoordinator], LightEntity):
         cs = self._get_colour_state()
         if cs and cs.colour_type == ColourType.RGBWAF:
             if None not in (cs.r, cs.g, cs.b, cs.w):
-                return (cs.r, cs.g, cs.b, cs.w)  # type: ignore[return-value]
+                return (
+                    round(cs.r * _HA_MAX / _DALI_MAX),  # type: ignore[operator]
+                    round(cs.g * _HA_MAX / _DALI_MAX),  # type: ignore[operator]
+                    round(cs.b * _HA_MAX / _DALI_MAX),  # type: ignore[operator]
+                    round(cs.w * _HA_MAX / _DALI_MAX),  # type: ignore[operator]
+                )
         return None
 
     @property
@@ -228,7 +245,7 @@ class _ZenLightBase(CoordinatorEntity[ZenControlCoordinator], LightEntity):
 
         if rgbw is not None:
             arc = self._resolve_arc(brightness)
-            r, g, b, w = rgbw
+            r, g, b, w = [_channel_to_dali(v) for v in rgbw]
             await cmds.set_colour_rgb(addr, r, g, b, w=w, arc_level=arc)
             self._optimistic_update(
                 new_arc=self._arc_after_colour(arc),
@@ -238,7 +255,7 @@ class _ZenLightBase(CoordinatorEntity[ZenControlCoordinator], LightEntity):
 
         if rgb is not None:
             arc = self._resolve_arc(brightness)
-            r, g, b = rgb
+            r, g, b = [_channel_to_dali(v) for v in rgb]
             await cmds.set_colour_rgb(addr, r, g, b, arc_level=arc)
             self._optimistic_update(
                 new_arc=self._arc_after_colour(arc),
