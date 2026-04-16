@@ -285,14 +285,21 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
                     continue
 
                 # Fetch label and timer info
+                # cd_addr is a DALI CD address (64-127); QUERY_DALI_DEVICE_LABEL accepts this range
                 label = await self.commands.query_instance_label(cd_addr, inst.instance_number)
                 timer = await self.commands.query_occupancy_timer(cd_addr, inst.instance_number)
 
-                # Derive a label: use instance label, or fall back to device label + instance
+                # Derive a label: use instance label, or fall back to device label + "Occupancy"
                 if not label:
-                    device_label = self.data.short_address_labels.get(cd_addr, f"Device {cd_addr}")
+                    device_label = (
+                        await self.commands.query_device_label(cd_addr)
+                        or f"Sensor {cd_addr - 64}"
+                    )
+                    occ_count = sum(
+                        1 for i in instances if i.instance_type == InstanceType.OCCUPANCY_SENSOR
+                    )
                     label = f"{device_label} Occupancy"
-                    if len(instances) > 1:
+                    if occ_count > 1:
                         label = f"{label} {inst.instance_number}"
 
                 sensor = OccupancySensorInfo(

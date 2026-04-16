@@ -61,7 +61,8 @@ class ZenOccupancySensor(CoordinatorEntity[ZenControlCoordinator], BinarySensorE
         self._attr_name = sensor.label
         self._attr_device_info = coordinator.device_info
         self._attr_extra_state_attributes = {
-            "cd_address": sensor.cd_address,
+            "dali_cd_address": sensor.cd_address,       # TPI address (64-127)
+            "cd_index": sensor.cd_address - 64,         # CD index (0-63)
             "instance": sensor.instance_number,
             "hold_time_s": sensor.hold_time_s,
         }

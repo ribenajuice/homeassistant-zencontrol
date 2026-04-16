@@ -534,21 +534,19 @@ class ZenCommands:
     # ------------------------------------------------------------------
 
     async def query_addresses_with_instances(self) -> list[int]:
-        """Return list of CD short addresses (0-63) that have instances.
+        """Return list of DALI CD addresses (64-127) that have instances.
 
-        The command is paged — we query twice (start=0, start=60) and combine,
-        so that all 64 possible DALI addresses are covered.
+        The start address is in data_lo. We query twice (start=0, start=60) to
+        cover all 64 possible control device addresses. The response is a list
+        of raw DALI addresses (64-127), one byte each.
         """
         addresses: set[int] = set()
         for start in (0, 60):
-            resp = await self._send(Command.QUERY_DALI_ADDRESSES_WITH_INSTANCES, address=start)
+            resp = await self._send(Command.QUERY_DALI_ADDRESSES_WITH_INSTANCES, data_lo=start)
             if resp and resp.has_data:
-                for byte_idx, byte_val in enumerate(resp.data):
-                    for bit in range(8):
-                        if byte_val & (1 << bit):
-                            addr = start + byte_idx * 8 + bit
-                            if 0 <= addr <= 63:
-                                addresses.add(addr)
+                for addr in resp.data:
+                    if 64 <= addr <= 127:
+                        addresses.add(addr)
         return sorted(addresses)
 
     async def query_instances_by_address(self, cd_address: int) -> list[InstanceInfo]:
@@ -573,15 +571,19 @@ class ZenCommands:
     async def query_occupancy_timer(
         self, cd_address: int, instance_number: int
     ) -> OccupancyTimerInfo:
-        """Return hold time and seconds-since-last-detection for an occupancy instance."""
+        """Return hold time and seconds-since-last-detection for an occupancy instance.
+
+        cd_address must be the DALI CD address (64-127).
+        Response layout (5 bytes): [deadtime_s, hold_s, report_s, last_detect_hi, last_detect_lo]
+        """
         resp = await self._send(
             Command.QUERY_OCCUPANCY_INSTANCE_TIMERS,
             address=cd_address,
             data_lo=instance_number,
         )
-        if resp and resp.has_data and len(resp.data) >= 4:
-            hold_time_s = (resp.data[0] << 8) | resp.data[1]
-            last_detect_s = (resp.data[2] << 8) | resp.data[3]
+        if resp and resp.has_data and len(resp.data) >= 5:
+            hold_time_s = resp.data[1]                           # byte 1 = hold time
+            last_detect_s = (resp.data[3] << 8) | resp.data[4]  # bytes 3-4 = last detect
             return OccupancyTimerInfo(
                 hold_time_s=hold_time_s if hold_time_s > 0 else 60,
                 last_detect_s=last_detect_s,
