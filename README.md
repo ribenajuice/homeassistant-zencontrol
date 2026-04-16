@@ -62,6 +62,7 @@ After setup, the integration creates the following entities for each controller:
 | **Light** (group) | A DALI lighting group | Auto-discovered from the controller |
 | **Light** (short address) | An individual DALI fixture | Auto-discovered |
 | **Switch** | A DALI relay output | Auto-discovered; detected by device type |
+| **Binary sensor** | An occupancy / motion sensor | Auto-discovered; see below |
 | **Select** | Active controller profile | Shows and controls the current profile |
 
 ### Colour control
@@ -77,6 +78,16 @@ The correct colour mode is detected automatically for each fixture.
 ### Brightness
 
 All lights support brightness control. Transitions are also supported — set a transition time in seconds when calling the `light.turn_on` service.
+
+### Occupancy sensors
+
+DALI occupancy sensors (motion detectors) are automatically discovered and appear as **binary sensor** entities with device class `occupancy`. When motion is detected the sensor turns `on`; it returns to `off` after the hold time configured on the controller has elapsed with no further motion.
+
+- Each sensor instance on the DALI bus appears as a separate entity.
+- All sensors are listed under the controller device — there is no per-room grouping.
+- The hold time is read directly from the controller at startup, so no manual configuration is required.
+- Initial state is recovered on startup: if the controller reports that motion was detected more recently than the hold time, the sensor will start in the `on` state.
+- Each sensor entity exposes three diagnostic attributes: `dali_cd_address` (the raw TPI address, 64–127), `cd_index` (the control device index, 0–63), and `hold_time_s` (the hold time in seconds).
 
 ---
 
@@ -106,6 +117,7 @@ The integration receives live state updates from the controller via push events 
 - Colour changes
 - Scene activations
 - Profile changes
+- Occupancy detections
 
 The controller is pinged every 30 seconds to confirm events are still flowing. If the controller has rebooted, event delivery is re-established automatically.
 
@@ -134,6 +146,16 @@ The controller is pinged every 30 seconds to confirm events are still flowing. I
 
 State is updated optimistically as soon as a command is sent, and confirmed by the controller's push event shortly after. If the icon does not update at all, check that the controller is reachable and events are flowing (see above).
 
+### Occupancy sensors do not appear
+
+- Confirm the sensor is commissioned on the DALI bus and visible in the zencontrol interface.
+- Occupancy sensors are discovered as DALI control devices — they must be addressed and configured on the controller before the integration can find them.
+- Check the Home Assistant logs for any discovery errors from the `zencontrol` integration.
+
+### Occupancy sensor stays on / does not clear
+
+The sensor clears automatically after the hold time configured on your zencontrol controller. If the sensor never clears, check the controller's sensor settings to confirm a hold time is set. If the hold time is 0, the integration falls back to a default of 60 seconds.
+
 ---
 
 ## Technical details
@@ -141,8 +163,9 @@ State is updated optimistically as soon as a command is sent, and confirmed by t
 - Protocol: TPI Advanced over UDP (default) or TCP
 - Default command port: 5108
 - Default event receive port: 6970 (unicast) / 6969 (multicast)
-- DALI addressing: groups 0–15 (address 64–79), short addresses 0–63
+- DALI addressing: groups 0–15 (address 64–79), short addresses 0–63, control devices 0–63 (TPI address 64–127)
 - Colour types: Tc (tuneable white), RGBWAF (up to 6 channels), CIE XY
+- Occupancy: individual sensor instances via DALI control device instances; hold timer managed by Home Assistant using the controller's configured hold time
 
 ---
 
