@@ -323,28 +323,72 @@ class ZenGroupLight(_ZenLightBase):
         self._attr_extra_state_attributes = {"group_number": group_number}
 
     @property
+    def _features(self) -> DeviceColourFeatures:
+        return self.coordinator.data.group_colour_features.get(
+            self._group_number, DeviceColourFeatures()
+        )
+
+    @property
+    def min_color_temp_kelvin(self) -> int | None:
+        limits = self.coordinator.data.group_ct_limits.get(self._group_number)
+        return limits.soft_warmest_k if limits else None
+
+    @property
+    def max_color_temp_kelvin(self) -> int | None:
+        limits = self.coordinator.data.group_ct_limits.get(self._group_number)
+        return limits.soft_coolest_k if limits else None
+
+    @property
     def color_mode(self) -> ColorMode:
+        f = self._features
         cs = self._get_colour_state()
-        if cs:
+        if cs and cs.colour_type:
             if cs.colour_type == ColourType.TC:
                 return ColorMode.COLOR_TEMP
             if cs.colour_type == ColourType.RGBWAF:
-                return ColorMode.RGBW if cs.w is not None else ColorMode.RGB
+                channels = f.rgbwaf_channels
+                return ColorMode.RGBW if channels >= 4 else ColorMode.RGB
             if cs.colour_type == ColourType.XY:
                 return ColorMode.XY
+        # Fall back to feature-based detection when no live state is present
+        if f.tc and not f.xy and not f.rgbwaf_channels:
+            return ColorMode.COLOR_TEMP
+        if f.rgbwaf_channels >= 4:
+            return ColorMode.RGBW
+        if f.rgbwaf_channels >= 3:
+            return ColorMode.RGB
+        if f.xy:
+            return ColorMode.XY
         return ColorMode.BRIGHTNESS
 
     @property
     def supported_color_modes(self) -> set[ColorMode]:
+        modes: set[ColorMode] = set()
+
+        # Feature-based (from discovery-time QUERY_DALI_COLOUR_FEATURES)
+        f = self._features
+        if f.tc:
+            modes.add(ColorMode.COLOR_TEMP)
+        if f.rgbwaf_channels >= 4:
+            modes.add(ColorMode.RGBW)
+        elif f.rgbwaf_channels >= 3:
+            modes.add(ColorMode.RGB)
+        if f.xy:
+            modes.add(ColorMode.XY)
+
+        # State-based: also include any mode implied by the current/startup ColourState.
+        # This ensures supported_color_modes is never narrower than color_mode, even when
+        # the controller doesn't answer QUERY_DALI_COLOUR_FEATURES for group addresses.
         cs = self._get_colour_state()
-        if cs:
+        if cs and cs.colour_type:
             if cs.colour_type == ColourType.TC:
-                return {ColorMode.COLOR_TEMP}
-            if cs.colour_type == ColourType.RGBWAF:
-                return {ColorMode.RGBW if cs.w is not None else ColorMode.RGB}
-            if cs.colour_type == ColourType.XY:
-                return {ColorMode.XY}
-        return {ColorMode.BRIGHTNESS}
+                modes.add(ColorMode.COLOR_TEMP)
+            elif cs.colour_type == ColourType.RGBWAF:
+                modes.add(ColorMode.RGBW if cs.w is not None else ColorMode.RGB)
+            elif cs.colour_type == ColourType.XY:
+                modes.add(ColorMode.XY)
+
+        return modes or {ColorMode.BRIGHTNESS}
 
     @property
     def supported_features(self) -> LightEntityFeature:
