@@ -184,22 +184,12 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
     async def _discover(self) -> None:
         """Query controller metadata and auto-discover groups/scenes/profiles."""
         _LOGGER.debug("Starting discovery for %s", self._host)
-
-        # Wait for controller startup — up to 60 s in 5 s increments
-        for attempt in range(12):
-            if await self.commands.query_startup_complete():
-                break
-            _LOGGER.debug("Controller %s not ready yet (attempt %d/12)", self._host, attempt + 1)
-            await asyncio.sleep(5)
-        else:
-            _LOGGER.warning(
-                "Controller %s startup did not complete after 60 s — continuing anyway",
-                self._host,
-            )
-
-        # Basic controller info
         label = await self.commands.query_controller_label()
-        self.data.label = label or self._host
+        if label is None:
+            raise UpdateFailed(
+                f"Controller {self._host} is not responding — will retry"
+            )
+        self.data.label = label
 
         version = await self.commands.query_controller_version()
         if version:
