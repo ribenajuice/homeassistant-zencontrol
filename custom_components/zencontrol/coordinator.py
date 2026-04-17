@@ -97,7 +97,9 @@ class ControllerState:
     # Keyed by DALI *address* (group address = group_number + 64, or short addr 0-63)
     device_states: dict[int, DeviceState] = field(default_factory=dict)
 
-    # Group colour capabilities (auto-discovered from the controller)
+    # Group capability data (auto-discovered from member short addresses)
+    # {group_number: [short_address, ...]} — all members found in the TPI database
+    group_members: dict[int, list[int]] = field(default_factory=dict)
     # Keyed by group_number (0-15).  An empty DeviceColourFeatures() means either the
     # group is non-colour OR the controller doesn't support feature queries on groups.
     group_colour_features: dict[int, DeviceColourFeatures] = field(default_factory=dict)
@@ -293,15 +295,27 @@ class ZenControlCoordinator(DataUpdateCoordinator[ControllerState]):
         if not self.data.groups:
             return
 
+        # Query every known short address for group membership so we can build a full
+        # reverse map (group → members).  This is needed for both colour-feature
+        # derivation and relay-only detection.
+        all_memberships: dict[int, frozenset[int]] = {}
+        for addr in self.data.short_addresses:
+            all_memberships[addr] = frozenset(await self.commands.query_group_membership(addr))
+
+        # Populate group_members: group_number → list of short addresses in that group.
+        group_members: dict[int, list[int]] = {}
+        for addr, addr_groups in all_memberships.items():
+            for gnum in addr_groups:
+                if gnum in self.data.groups:
+                    group_members.setdefault(gnum, []).append(addr)
+        self.data.group_members = group_members
+
+        # Restrict to colour-capable addresses for feature derivation.
         colour_addrs = [
             addr for addr in self.data.short_addresses
             if self.data.short_address_colour_features.get(addr, DeviceColourFeatures()).supports_colour
         ]
-
-        # addr → frozenset of group numbers it belongs to
-        memberships: dict[int, frozenset[int]] = {}
-        for addr in colour_addrs:
-            memberships[addr] = frozenset(await self.commands.query_group_membership(addr))
+        memberships = {addr: all_memberships[addr] for addr in colour_addrs}
 
         # Build group_num → union of member DeviceColourFeatures
         group_features: dict[int, DeviceColourFeatures] = {}

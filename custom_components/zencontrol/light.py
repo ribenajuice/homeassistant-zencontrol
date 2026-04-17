@@ -329,6 +329,16 @@ class ZenGroupLight(_ZenLightBase):
         )
 
     @property
+    def _any_dimmable(self) -> bool:
+        """True if any member of this group supports dimming (i.e. is not relay-only)."""
+        members = self.coordinator.data.group_members.get(self._group_number, [])
+        types = self.coordinator.data.short_address_types
+        return any(
+            DaliCgTypeMask.RELAY not in types.get(addr, DaliCgTypeMask(0))
+            for addr in members
+        )
+
+    @property
     def min_color_temp_kelvin(self) -> int | None:
         limits = self.coordinator.data.group_ct_limits.get(self._group_number)
         return limits.soft_warmest_k if limits else None
@@ -339,7 +349,13 @@ class ZenGroupLight(_ZenLightBase):
         return limits.soft_coolest_k if limits else None
 
     @property
+    def brightness(self) -> int | None:
+        return None if not self._any_dimmable else super().brightness
+
+    @property
     def color_mode(self) -> ColorMode:
+        if not self._any_dimmable:
+            return ColorMode.ONOFF
         f = self._features
         cs = self._get_colour_state()
         if cs and cs.colour_type:
@@ -363,6 +379,9 @@ class ZenGroupLight(_ZenLightBase):
 
     @property
     def supported_color_modes(self) -> set[ColorMode]:
+        if not self._any_dimmable:
+            return {ColorMode.ONOFF}
+
         modes: set[ColorMode] = set()
 
         # Feature-based (from discovery-time QUERY_DALI_COLOUR_FEATURES)
@@ -392,7 +411,14 @@ class ZenGroupLight(_ZenLightBase):
 
     @property
     def supported_features(self) -> LightEntityFeature:
-        return LightEntityFeature.TRANSITION
+        return LightEntityFeature(0) if not self._any_dimmable else LightEntityFeature.TRANSITION
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        if not self._any_dimmable:
+            await self.coordinator.commands.recall_max(self._dali_address)
+            self._optimistic_update(new_arc=ARC_LEVEL_MAX)
+            return
+        await super().async_turn_on(**kwargs)
 
 
 # ---------------------------------------------------------------------------
